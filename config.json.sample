@@ -1,0 +1,14 @@
+{
+  "publicKey":"ginderUserKeyPublic",
+  "privateKey":"ginderUserKeyPrivate",
+  "clusterId": "13",
+  "servers": [
+    {
+      "id": "2",
+      "ip": "127.0.0.1",
+      "saveDir":"F:\\ArkServerManager\\Servers\\Server1\\ShooterGame\\Saved\\worldSave\\",
+      "rconPort":"33333",
+      "rconPass":"passssss"
+    }
+  ]
+}
