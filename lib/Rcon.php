@@ -265,8 +265,8 @@ class Rcon
 		foreach ($matches[1] as $key=>$playerName){
 			$result[$matches[3][$key]] = [
 				'steamId' => $matches[3][$key],
-				'characterName' => $playerName,
-				'tribeName' => $matches[2][$key],
+				'characterName' => utf8_encode($playerName),
+				'tribeName' => utf8_encode($matches[2][$key]),
 			];
 		}
 		
@@ -281,13 +281,13 @@ class Rcon
 		
 		$result = [];
 		
-		if(!preg_match_all('!(Day \d+\, .+?): (.+)!i', $response, $matches))
+		if(!preg_match_all('!(Day \d+\, .+?): (.+)!iu', $response, $matches))
 			return $result;
 		
 		foreach ($matches[1] as $key=>$date){
 			$result[] = [
-				'date' => trim($date),
-				'msg' => trim(strip_tags($matches[2][$key])),
+				'date' => trim(utf8_encode($date)),
+				'msg' => trim(strip_tags(utf8_encode($matches[2][$key]))),
 			];
 		}
 		

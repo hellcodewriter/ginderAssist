@@ -14,6 +14,15 @@ if(!file_exists(TMP_FILE)){
 
 $cfg = [
 	'apiUrl' => 'http://94.228.113.214:85/api',
+	'allowedRconCommands' => [
+		'saveworld',
+		'broadcast',
+		'addpoints',
+		'pvpve',
+		'pvetime',
+		'pvetime',
+		'permissions',
+	]
 ];
 
 if($savedCfg = @json_decode(file_get_contents(CFG_FILE), true))
@@ -24,11 +33,121 @@ else
 $tmp = readTmp();
 $rConnects = [];
 
+$tasks = [
+	'rcon' => [
+		'interval' => 3,
+		'lastStart' => 0,
+	],
+	'checkServers' => [
+		'interval' => 60,
+		'lastStart' => 0,
+	],
+];
+
+$startTime = time();
+
+$playersLocal = [];
+$tribesLocal = [];
 
 while(true){
-	$serversUpdated = 0;
 	
+	foreach ($tasks as $name=> &$task){
+		$now = time();
+		
+		if($now - $task['lastStart'] >= $task['interval']){
+			$task['lastStart'] = $now;
+			$funcName = "{$name}Task";
+			$funcName();
+		}
+	}
+	
+	sleep(1);
+}
+
+function rconTask(){
+	global $cfg;
+	
+	$data = [
+		'method' => 'getRconCommands',
+	];
+	
+	$commandPull = httpRequest($data);
+	
+	if($commandPull === null){
+		toLog('error content in rconTask', false, true);
+		return;
+	}
+	
+	foreach ($commandPull as $commandId=>$pull) {
+		
+		$response = [];
+		
+		foreach ($pull as $serverId=>$command){
+			
+			$allowed = false;
+			foreach ($cfg['allowedRconCommands'] as $allowedCmd){
+				
+				if(mb_strpos(mb_strtolower($command, 'utf-8'), $allowedCmd, 0, 'utf-8')===0){
+					$allowed = true;
+					break;
+				}
+			}
+			
+			if(!$allowed){
+				toLog('disallowed command '.$command, false, true);
+				$response[$serverId] = 'denied';
+				continue;
+			}
+			
+			$index = array_search($serverId, array_column($cfg['servers'], 'id'));
+			
+			if($index===false or !$server = $cfg['servers'][$index]){
+				$response[$serverId] = 'not found';
+				continue;
+			}
+			
+			$rcon = new Rcon($server['ip'], $server['rconPort'], $server['rconPass'], 5);
+			
+			$commandResult = $rcon->sendCommand($command);
+			
+			if($commandResult === null){
+				$response[$serverId] = 'error';
+				toLog('failed to execute Rcon command: '.$command.' on server '.$serverId, false, true);
+				continue;
+			}
+			
+			toLog('executed command: '.$command.' on server '.$serverId, false, true);
+			
+			if(preg_match('!Server received, But no response!', $commandResult))
+				$commandResult = 'success';
+			
+			$response[$serverId] = $commandResult;
+			
+			//sleep(1);
+		}
+		
+		$data = [
+			'method' => 'setRconResponse',
+			'command' =>[
+				'id' => $commandId,
+				'response' => $response,
+			]
+		];
+		
+		$result = httpRequest($data);
+		
+		//todo: write to tmp file executed commands to prevent repeating
+		
+		if($result['result'] !== 'success'){
+			toLog('error setRconResponse: '.json_encode($result), false, true);
+		}
+	}
+}
+
+function checkServersTask(){
+	global $cfg, $playersLocal, $tribesLocal;
 	$startTime = time();
+	$serversUpdated = 0;
 	
 	foreach ($cfg['servers'] as $server){
 		toLog("checking server: {$server['id']}", false, true);
@@ -84,7 +203,7 @@ while(true){
 						continue 2;
 					}
 					
-					toLog("logs count: ".count($logs), false, true);
+					toLog("logs count: ".count($logs), false, false);
 					$tribes[$profile['tribeId']]['logs'] = $logs;
 				}
 			}
@@ -92,29 +211,75 @@ while(true){
 		}
 		
 		$data = [
-			'publicKey' => $cfg['publicKey'],
-			'privateKey' => $cfg['privateKey'],
-			'clusterId' => $cfg['clusterId'],
+			'method' => 'updateServerInfo',
 			'serverId' => $server['id'],
 			'players' => $players,
 			'tribes' => $tribes,
 		];
 		//$rcon->disconnect();
+		$result = httpRequest($data);
 		
-		$content = httpRequest($data);
 		
-		if($content === true){
+		if($result['result'] === 'success'){
 			$serversUpdated++;
 			toLog("server updated", false, true);
 		}else{
-			toLog('httpRequest error: '.$content);
+			toLog('httpRequest error '.$server['id'].': '.json_encode($result), false, true);
 		}
 		
 		unset($rcon);
 	}
-	
 	toLog("updated: $serversUpdated servers, spent: ".(time() - $startTime)." sec");
-	sleep(120);
+}
+
+/**
+ * @param string $url
+ * @param array $data
+ * @param string $publicKey
+ * @param string $privateKey
+ * @return mixed|null
+ */
+function httpRequest($data){
+	$cfg = $GLOBALS['cfg'];
+	
+	$data['publicKey'] = $cfg['publicKey'];
+	$data['privateKey'] = $cfg['privateKey'];
+	$data['clusterId'] = $cfg['clusterId'];
+	
+	$json = json_encode($data);
+	
+	if(!$json){
+		toLog('error json encode data for '.$data['serverId'].', '.json_last_error_msg());
+		return null;
+	}
+	
+	$encoded = gzencode($json, 9);
+	$encoded = encrypt($encoded, $cfg['privateKey']);
+	
+	$options = [
+		'http' => [
+			'header'  => "Content-type:application/x-www-form-urlencoded\r\nkey: {$cfg['publicKey']}\r\n",
+			'method'  => 'POST',
+			'content' => $encoded,
+		],
+	];
+	
+	$context  = stream_context_create($options);
+	$result = file_get_contents($cfg['apiUrl'], false, $context);
+	
+	if ($result === false) {
+		toLog('request error');
+		return null;
+	}
+	
+	$decode = @json_decode($result, true);
+	
+	if(json_last_error()){
+		toLog('decode error: '.json_last_error_msg());
+		return null;
+	}
+	
+	return $decode;
 }
 
 function getProfile($steamId){
@@ -175,59 +340,15 @@ function execCommand($command){
 	$response = trim($response, "`'");
 	$response = str_replace('\\\"', '\\"', $response);  //node bug
 	
-	if(!$result = @json_decode($response, true))
+	$result = @json_decode($response, true);
+	
+	if(json_last_error())
 		return null;
 	
 	return $result;
 }
 
-/**
- * @param string $url
- * @param array $data
- * @param string $publicKey
- * @param string $privateKey
- * @return bool
- */
-function httpRequest($data){
-	$cfg = $GLOBALS['cfg'];
-	
-	$data['method'] = 'updateServerInfo';
-	$data = gzencode(json_encode($data), 9);
-	$data = encrypt($data, $cfg['privateKey']);
-	//echo "\n strlen: ".strlen($data);die;
-	//echo "\n strlen: ".strlen($data);
-//	$data = decrypt($data, $privateKey);
-//	$data = gzdecode($data);
-//
-//	die;
-	//prrd(json_decode($data, true));
-	//die;
-	
-	$options = [
-		'http' => [
-			'header'  => "Content-type:application/x-www-form-urlencoded\r\nkey: {$cfg['publicKey']}\r\n",
-			'method'  => 'POST',
-			'content' => $data,
-		],
-	];
-	
-	$context  = stream_context_create($options);
-	$result = file_get_contents($cfg['apiUrl'], false, $context);
-	
-	if ($result === false) {
-		return false;
-	}
-	
-	if($result === 'ok')
-		return true;
-	else{
-		return $result;
-	}
-}
-
-function prrd($data){
-	print_r($data);die;
-}
+function prrd($data){print_r($data);die;}
 
 function encrypt($data, $key, $method = 'AES-256-CBC', $blockSize = 16){
 	return openssl_encrypt($data, $method, $key, 0, substr(md5($key), 0, $blockSize));

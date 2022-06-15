@@ -1,4 +1,5 @@
 .idea
 /runtime/*
 /config.json
+.DS_Store
 !/runtime/.gitkeep
